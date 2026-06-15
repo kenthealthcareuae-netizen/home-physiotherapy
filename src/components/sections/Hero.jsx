@@ -326,9 +326,9 @@ export default function HeroSection() {
         </div>
       </section>
 
-      {/* Floating WhatsApp & Call buttons */}
-      <div className="fixed bottom-8 right-8 flex flex-col gap-3 z-50">
-        <WhatsAppButton 
+   {/* Floating WhatsApp & Call buttons */}
+<!--  <div className="fixed bottom-8 right-8 flex flex-col gap-3 z-50">
+      <WhatsAppButton 
           className="bg-green-500 hover:bg-green-600 w-14 h-14 rounded-full text-white shadow-lg hover:shadow-xl transform transition-all duration-300 hover:scale-110 border-2 border-green-400 hover:border-green-300 flex items-center justify-center"
           phoneNumber="+971507547326"
         >
@@ -337,7 +337,7 @@ export default function HeroSection() {
         <a href={HERO_CALL} className="bg-blue-500 hover:bg-blue-600 w-14 h-14 rounded-full text-white shadow-lg hover:shadow-xl transform transition-all duration-300 hover:scale-110 border-2 border-blue-400 hover:border-blue-300 flex items-center justify-center">
           <PhoneCall size={24}/>
         </a>
-      </div>
+      </div>-->
 
       {/* Free Session Modal */}
       <FreeSessionModal
