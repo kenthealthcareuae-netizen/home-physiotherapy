@@ -9,6 +9,7 @@ import FaqSection from '@/components/sections/Faq';
 import ContactSection from '@/components/sections/ContactForm';
 import Footer from '@/components/sections/Footer';
 import CountdownTimer from '@/components/ui/CountdownTimer';
+import FloatingContactButtons from '@/components/ui/FloatingContactButtons';
 import { motion } from 'framer-motion';
 import { ConfigProvider, useConfig } from '@/contexts/ConfigContext';
 
