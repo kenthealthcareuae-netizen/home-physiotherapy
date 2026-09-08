@@ -1,345 +1,259 @@
 name: Deploy Home Physiotherapy
- 
+
 on:
-  push:
-    branches:
-      - main
- 
   workflow_dispatch:
- 
+
 concurrency:
   group: home-physiotherapy-production
   cancel-in-progress: false
- 
+
 env:
   SITE_PATH: /home/home-physiotherapy.kenthealthcare.ae
-  BUILD_PATH: /home/home-physiotherapy.kenthealthcare.ae/build
   PUBLIC_HTML: /home/home-physiotherapy.kenthealthcare.ae/public_html
-  APP_OWNER: homep9657
-  # TODO: confirm SSH port for this account (physiotherapy uses 5522 — same account family, but confirm)
   DEPLOY_PORT: 5522
- 
+
 jobs:
-  deploy:
-    name: Build and Deploy
+  build:
+    name: Build Website
     runs-on: ubuntu-latest
- 
+
     steps:
- 
-      # ============================================================
-      # Configure SSH
-      # ============================================================
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build website
+        run: npm run build
+
+      - name: Check build output
+        run: |
+          set -e
+
+          if [ ! -d "dist" ]; then
+            echo "ERROR: dist directory was not created"
+            exit 1
+          fi
+
+          if [ -z "$(find dist -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "ERROR: dist directory is empty"
+            exit 1
+          fi
+
+          echo "Build output:"
+          find dist -maxdepth 2 -type f | head -50
+
+          echo "Build validation successful"
+
+      - name: Create deployment package
+        run: |
+          tar -czf home-physiotherapy-dist.tar.gz -C dist .
+          ls -lh home-physiotherapy-dist.tar.gz
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: home-physiotherapy-dist
+          path: home-physiotherapy-dist.tar.gz
+
+  deploy:
+    name: Deploy to Production
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download deployment artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: home-physiotherapy-dist
+
       - name: Configure SSH
         env:
-          # TODO: confirm whether this reuses the shared secrets or gets its own
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -e
- 
+
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
- 
+
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/github_actions
           chmod 600 ~/.ssh/github_actions
- 
-          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" \
->> ~/.ssh/known_hosts
- 
-          chmod 644 ~/.ssh/known_hosts
- 
-          echo "SSH configuration completed"
- 
-      # ============================================================
-      # Test SSH connection
-      # ============================================================
+
+          ssh-keyscan -p 5522 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+          echo "SSH configured"
+
       - name: Test SSH connection
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
- 
+
           ssh \
-            -p "$DEPLOY_PORT" \
+            -p 5522 \
             -i ~/.ssh/github_actions \
             -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "echo 'SSH connection successful'; whoami; hostname"
- 
-      # ============================================================
-      # Update source code
-      # ============================================================
-      - name: Update source code
+            "echo SSH connection successful"
+
+      - name: Upload deployment package
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
- 
-          ssh \
-            -p "$DEPLOY_PORT" \
+
+          scp \
+            -P 5522 \
             -i ~/.ssh/github_actions \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
- 
-          set -e
- 
-          BUILD="/home/home-physiotherapy.kenthealthcare.ae/build"
- 
-          echo "=========================================="
-          echo "Updating source code"
-          echo "=========================================="
- 
-          # TODO: this directory has no .git yet (per earlier `ll`) —
-          # needs `git clone <repo> .` run here once, manually, before
-          # this step will work.
-          test -d "$BUILD"
- 
-          cd "$BUILD"
- 
-          git fetch origin main
- 
-          git reset --hard origin/main
- 
-          echo
-          echo "Source code updated successfully"
- 
-          echo "Current commit:"
-          git log -1 --oneline
- 
-          REMOTE_SCRIPT
- 
-      # ============================================================
-      # Build application on server
-      # ============================================================
-      - name: Build application
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+            home-physiotherapy-dist.tar.gz \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-dist.tar.gz"
+
+          echo "Package uploaded successfully"
+
+      - name: Create remote deployment script
         run: |
+          cat > deploy.sh <<'SCRIPT'
+          #!/bin/bash
+
           set -e
- 
-          ssh \
-            -p "$DEPLOY_PORT" \
-            -i ~/.ssh/github_actions \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
- 
-          set -e
- 
-          BUILD="/home/home-physiotherapy.kenthealthcare.ae/build"
- 
-          cd "$BUILD"
- 
+
+          SITE="/home/home-physiotherapy.kenthealthcare.ae"
+          PUBLIC_HTML="$SITE/public_html"
+          BACKUP_ROOT="$SITE/backups"
+
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BACKUP="$BACKUP_ROOT/$TIMESTAMP"
+          DEPLOY_DIR="/tmp/home-physiotherapy-deploy"
+
           echo "=========================================="
-          echo "Installing dependencies"
+          echo "HOME PHYSIOTHERAPY DEPLOYMENT"
           echo "=========================================="
- 
-          npm ci
- 
-          echo
+
+          echo "Checking production directory..."
+
+          if [ ! -d "$PUBLIC_HTML" ]; then
+            echo "ERROR: $PUBLIC_HTML does not exist"
+            exit 1
+          fi
+
+          echo "Production directory exists"
+
           echo "=========================================="
-          echo "Building application"
+          echo "Creating backup"
           echo "=========================================="
- 
-          npm run build
- 
-          echo
+
+          mkdir -p "$BACKUP"
+
+          rsync -a \
+            "$PUBLIC_HTML/" \
+            "$BACKUP/"
+
+          echo "Backup created: $BACKUP"
+
+          echo "=========================================="
+          echo "Preparing new build"
+          echo "=========================================="
+
+          rm -rf "$DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+
+          tar -xzf \
+            /tmp/home-physiotherapy-dist.tar.gz \
+            -C "$DEPLOY_DIR"
+
           echo "=========================================="
           echo "Validating build"
           echo "=========================================="
- 
-          test -d "$BUILD/dist"
-          test -s "$BUILD/dist/index.html"
-          # TODO: confirm — this build showed admin-direct.html, not admin.html
-          test -s "$BUILD/dist/admin-direct.html"
-          test -d "$BUILD/dist/assets"
- 
-          echo
-          echo "Build validation successful"
- 
-          ls -lah "$BUILD/dist"
- 
-          REMOTE_SCRIPT
- 
-      # ============================================================
-      # Deploy dist to public_html
-      # ============================================================
-      - name: Deploy dist to public_html
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          set -e
- 
-          ssh \
-            -p "$DEPLOY_PORT" \
-            -i ~/.ssh/github_actions \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
- 
-          set -e
- 
-          BUILD="/home/home-physiotherapy.kenthealthcare.ae/build"
-          PUBLIC_HTML="/home/home-physiotherapy.kenthealthcare.ae/public_html"
- 
+
+          if [ -z "$(find "$DEPLOY_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+            echo "ERROR: Deployment directory is empty"
+            exit 1
+          fi
+
+          echo "Deployment files validated"
+
           echo "=========================================="
-          echo "Deploying dist to public_html"
+          echo "Deploying files"
           echo "=========================================="
- 
-          test -d "$BUILD/dist"
-          test -d "$PUBLIC_HTML"
- 
+
           rsync -a --delete \
             --exclude=".well-known/" \
-            --exclude="php-proxy.php" \
-            "$BUILD/dist/" \
+            "$DEPLOY_DIR/" \
             "$PUBLIC_HTML/"
- 
-          echo "Deployment completed"
- 
-          REMOTE_SCRIPT
- 
-      # ============================================================
-      # Restore complete ownership and permissions
-      # ============================================================
-      - name: Set ownership and permissions
+
+          echo "Files deployed successfully"
+
+          echo "=========================================="
+          echo "Setting ownership"
+          echo "=========================================="
+
+          chown -R homep9657:homep9657 "$PUBLIC_HTML"
+
+          echo "Ownership updated"
+
+          echo "=========================================="
+          echo "Cleaning temporary files"
+          echo "=========================================="
+
+          rm -rf "$DEPLOY_DIR"
+          rm -f /tmp/home-physiotherapy-dist.tar.gz
+
+          echo "Cleanup completed"
+
+          echo "=========================================="
+          echo "DEPLOYMENT SUCCESSFUL"
+          echo "=========================================="
+          SCRIPT
+
+          chmod +x deploy.sh
+
+      - name: Upload deployment script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          scp \
+            -P 5522 \
+            -i ~/.ssh/github_actions \
+            deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-deploy.sh"
+
+      - name: Execute deployment
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
- 
+
           ssh \
-            -p "$DEPLOY_PORT" \
+            -p 5522 \
             -i ~/.ssh/github_actions \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
- 
-          set -e
- 
-          SITE="/home/home-physiotherapy.kenthealthcare.ae"
-          OWNER="homep9657"
- 
-          echo "=========================================="
-          echo "Setting Home Physiotherapy ownership"
-          echo "=========================================="
- 
-          echo "Owner: $OWNER:$OWNER"
- 
-          chown -R "$OWNER:$OWNER" "$SITE"
- 
-          echo
-          echo "Setting directory permissions to 755..."
- 
-          find "$SITE" \
-            -type d \
-            -exec chmod 755 {} \;
- 
-          echo
-          echo "Setting web file permissions to 644..."
- 
-          find "$SITE/public_html" \
-            -type f \
-            -exec chmod 644 {} \;
- 
-          echo
-          echo "Ownership and permissions completed"
- 
-          REMOTE_SCRIPT
- 
-      # ============================================================
-      # Verify ownership and deployment
-      # ============================================================
-      - name: Verify deployment
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+            "bash /tmp/home-physiotherapy-deploy.sh"
+
+      - name: Verify website
         run: |
           set -e
- 
-          ssh \
-            -p "$DEPLOY_PORT" \
-            -i ~/.ssh/github_actions \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=yes \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
- 
-          set -e
- 
-          SITE="/home/home-physiotherapy.kenthealthcare.ae"
-          PUBLIC_HTML="$SITE/public_html"
-          OWNER="homep9657"
- 
-          echo "=========================================="
-          echo "Verifying Home Physiotherapy deployment"
-          echo "=========================================="
- 
-          test -s "$PUBLIC_HTML/index.html"
-          # TODO: confirm filename
-          test -s "$PUBLIC_HTML/admin-direct.html"
-          test -d "$PUBLIC_HTML/assets"
- 
-          test -f "$PUBLIC_HTML/php-proxy.php"
- 
-          test "$(stat -c '%U:%G' "$SITE")" = "$OWNER:$OWNER"
-          test "$(stat -c '%U:%G' "$SITE/build")" = "$OWNER:$OWNER"
-          test "$(stat -c '%U:%G' "$PUBLIC_HTML")" = "$OWNER:$OWNER"
- 
-          test "$(stat -c '%U:%G' "$PUBLIC_HTML/index.html")" = "$OWNER:$OWNER"
-          test "$(stat -c '%U:%G' "$PUBLIC_HTML/admin-direct.html")" = "$OWNER:$OWNER"
-          test "$(stat -c '%U:%G' "$PUBLIC_HTML/php-proxy.php")" = "$OWNER:$OWNER"
- 
-          test "$(stat -c '%a' "$PUBLIC_HTML/index.html")" = "644"
-          test "$(stat -c '%a' "$PUBLIC_HTML/admin-direct.html")" = "644"
-          test "$(stat -c '%a' "$PUBLIC_HTML/assets")" = "755"
- 
-          echo
-          echo "Ownership:"
-          stat -c '%U:%G %a %n' \
-            "$SITE" \
-            "$SITE/build" \
-            "$PUBLIC_HTML" \
-            "$PUBLIC_HTML/index.html" \
-            "$PUBLIC_HTML/admin-direct.html" \
-            "$PUBLIC_HTML/php-proxy.php"
- 
-          echo
-          echo "Production contents:"
-          ls -lah "$PUBLIC_HTML"
- 
-          echo
-          echo "Deployment verification successful"
- 
-          REMOTE_SCRIPT
- 
-      # ============================================================
-      # Verify live website
-      # ============================================================
-      - name: Verify live website
-        run: |
-          set -e
- 
-          echo "Checking live website..."
- 
+
+          echo "Checking website..."
+
           curl \
             --fail \
             --silent \
             --show-error \
             --location \
             --max-time 30 \
-https://home-physiotherapy.kenthealthcare.ae/ \
+            https://home-physiotherapy.kenthealthcare.ae/ \
             -o /dev/null
- 
-          echo "Live website verification successful"
+
+          echo "Website verification successful"
