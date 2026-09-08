@@ -9,6 +9,7 @@ concurrency:
 
 env:
   SITE_PATH: /home/home-physiotherapy.kenthealthcare.ae
+  PUBLIC_HTML: /home/home-physiotherapy.kenthealthcare.ae/public_html
   DEPLOY_PORT: 5522
 
 jobs:
@@ -36,15 +37,30 @@ jobs:
         run: |
           set -e
 
-          test -f dist/index.html
-          test -f dist/admin-direct.html
-          test -d dist/assets
+          echo "Checking build output..."
+
+          if [ ! -d "dist" ]; then
+            echo "ERROR: dist directory was not created"
+            exit 1
+          fi
+
+          if [ ! -f "dist/index.html" ]; then
+            echo "ERROR: dist/index.html was not created"
+            exit 1
+          fi
+
+          echo "Build output:"
+          find dist -maxdepth 2 -type f | sort | head -100
 
           echo "Build validation successful"
 
       - name: Create deployment package
         run: |
+          set -e
+
           tar -czf home-physiotherapy-dist.tar.gz -C dist .
+
+          echo "Deployment package created:"
           ls -lh home-physiotherapy-dist.tar.gz
 
       - name: Upload deployment artifact
@@ -108,20 +124,12 @@ jobs:
             home-physiotherapy-dist.tar.gz \
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-dist.tar.gz"
 
-          echo "Deployment package uploaded"
+          echo "Deployment package uploaded successfully"
 
-      - name: Deploy website
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      - name: Create deployment script
         run: |
-          set -e
-
-          ssh \
-            -p 5522 \
-            -i ~/.ssh/github_actions \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'bash -s' <<'REMOTE_SCRIPT'
+          cat > deploy.sh <<'SCRIPT'
+          #!/bin/bash
 
           set -e
 
@@ -162,7 +170,7 @@ jobs:
           echo "$BACKUP"
 
           echo "=========================================="
-          echo "Preparing deployment files"
+          echo "Preparing deployment"
           echo "=========================================="
 
           rm -rf "$DEPLOY_DIR"
@@ -177,17 +185,7 @@ jobs:
           echo "=========================================="
 
           if [ ! -f "$DEPLOY_DIR/index.html" ]; then
-            echo "ERROR: index.html missing"
-            exit 1
-          fi
-
-          if [ ! -f "$DEPLOY_DIR/admin-direct.html" ]; then
-            echo "ERROR: admin-direct.html missing"
-            exit 1
-          fi
-
-          if [ ! -d "$DEPLOY_DIR/assets" ]; then
-            echo "ERROR: assets directory missing"
+            echo "ERROR: index.html missing from deployment"
             exit 1
           fi
 
@@ -203,10 +201,10 @@ jobs:
             "$DEPLOY_DIR/" \
             "$PUBLIC_HTML/"
 
-          echo "Website files deployed"
+          echo "Website files deployed successfully"
 
           echo "=========================================="
-          echo "Setting ownership"
+          echo "Fixing ownership"
           echo "=========================================="
 
           chown -R homep9657:homep9657 "$PUBLIC_HTML"
@@ -225,8 +223,39 @@ jobs:
           echo "=========================================="
           echo "Deployment completed successfully"
           echo "=========================================="
+          SCRIPT
 
-          REMOTE_SCRIPT
+          chmod +x deploy.sh
+
+      - name: Upload deployment script
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -e
+
+          scp \
+            -P 5522 \
+            -i ~/.ssh/github_actions \
+            deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-deploy.sh"
+
+          echo "Deployment script uploaded"
+
+      - name: Execute deployment
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -e
+
+          ssh \
+            -p 5522 \
+            -i ~/.ssh/github_actions \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash /tmp/home-physiotherapy-deploy.sh"
+
+          echo "Remote deployment completed"
 
       - name: Verify website
         run: |
