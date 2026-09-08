@@ -1,259 +1,246 @@
 name: Deploy Home Physiotherapy
-
+ 
 on:
   workflow_dispatch:
-
+ 
 concurrency:
   group: home-physiotherapy-production
   cancel-in-progress: false
-
+ 
 env:
   SITE_PATH: /home/home-physiotherapy.kenthealthcare.ae
-  PUBLIC_HTML: /home/home-physiotherapy.kenthealthcare.ae/public_html
   DEPLOY_PORT: 5522
-
+ 
 jobs:
   build:
     name: Build Website
     runs-on: ubuntu-latest
-
+ 
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
-
+ 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
+ 
       - name: Install dependencies
         run: npm ci
-
+ 
       - name: Build website
         run: npm run build
-
-      - name: Check build output
+ 
+      - name: Validate build
         run: |
           set -e
-
-          if [ ! -d "dist" ]; then
-            echo "ERROR: dist directory was not created"
-            exit 1
-          fi
-
-          if [ -z "$(find dist -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            echo "ERROR: dist directory is empty"
-            exit 1
-          fi
-
-          echo "Build output:"
-          find dist -maxdepth 2 -type f | head -50
-
+ 
+          test -f dist/index.html
+          test -f dist/admin-direct.html
+          test -d dist/assets
+ 
           echo "Build validation successful"
-
+ 
       - name: Create deployment package
         run: |
           tar -czf home-physiotherapy-dist.tar.gz -C dist .
           ls -lh home-physiotherapy-dist.tar.gz
-
+ 
       - name: Upload deployment artifact
         uses: actions/upload-artifact@v4
         with:
           name: home-physiotherapy-dist
           path: home-physiotherapy-dist.tar.gz
-
+ 
   deploy:
     name: Deploy to Production
     needs: build
     runs-on: ubuntu-latest
-
+ 
     steps:
       - name: Download deployment artifact
         uses: actions/download-artifact@v4
         with:
           name: home-physiotherapy-dist
-
+ 
       - name: Configure SSH
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
         run: |
           set -e
-
+ 
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-
+ 
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/github_actions
           chmod 600 ~/.ssh/github_actions
-
+ 
           ssh-keyscan -p 5522 -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
-
-          echo "SSH configured"
-
+ 
+          echo "SSH configuration completed"
+ 
       - name: Test SSH connection
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
-
+ 
           ssh \
             -p 5522 \
             -i ~/.ssh/github_actions \
             -o BatchMode=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             "echo SSH connection successful"
-
+ 
       - name: Upload deployment package
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
-
+ 
           scp \
             -P 5522 \
             -i ~/.ssh/github_actions \
             home-physiotherapy-dist.tar.gz \
             "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-dist.tar.gz"
-
-          echo "Package uploaded successfully"
-
-      - name: Create remote deployment script
-        run: |
-          cat > deploy.sh <<'SCRIPT'
-          #!/bin/bash
-
-          set -e
-
-          SITE="/home/home-physiotherapy.kenthealthcare.ae"
-          PUBLIC_HTML="$SITE/public_html"
-          BACKUP_ROOT="$SITE/backups"
-
-          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-          BACKUP="$BACKUP_ROOT/$TIMESTAMP"
-          DEPLOY_DIR="/tmp/home-physiotherapy-deploy"
-
-          echo "=========================================="
-          echo "HOME PHYSIOTHERAPY DEPLOYMENT"
-          echo "=========================================="
-
-          echo "Checking production directory..."
-
-          if [ ! -d "$PUBLIC_HTML" ]; then
-            echo "ERROR: $PUBLIC_HTML does not exist"
-            exit 1
-          fi
-
-          echo "Production directory exists"
-
-          echo "=========================================="
-          echo "Creating backup"
-          echo "=========================================="
-
-          mkdir -p "$BACKUP"
-
-          rsync -a \
-            "$PUBLIC_HTML/" \
-            "$BACKUP/"
-
-          echo "Backup created: $BACKUP"
-
-          echo "=========================================="
-          echo "Preparing new build"
-          echo "=========================================="
-
-          rm -rf "$DEPLOY_DIR"
-          mkdir -p "$DEPLOY_DIR"
-
-          tar -xzf \
-            /tmp/home-physiotherapy-dist.tar.gz \
-            -C "$DEPLOY_DIR"
-
-          echo "=========================================="
-          echo "Validating build"
-          echo "=========================================="
-
-          if [ -z "$(find "$DEPLOY_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-            echo "ERROR: Deployment directory is empty"
-            exit 1
-          fi
-
-          echo "Deployment files validated"
-
-          echo "=========================================="
-          echo "Deploying files"
-          echo "=========================================="
-
-          rsync -a --delete \
-            --exclude=".well-known/" \
-            "$DEPLOY_DIR/" \
-            "$PUBLIC_HTML/"
-
-          echo "Files deployed successfully"
-
-          echo "=========================================="
-          echo "Setting ownership"
-          echo "=========================================="
-
-          chown -R homep9657:homep9657 "$PUBLIC_HTML"
-
-          echo "Ownership updated"
-
-          echo "=========================================="
-          echo "Cleaning temporary files"
-          echo "=========================================="
-
-          rm -rf "$DEPLOY_DIR"
-          rm -f /tmp/home-physiotherapy-dist.tar.gz
-
-          echo "Cleanup completed"
-
-          echo "=========================================="
-          echo "DEPLOYMENT SUCCESSFUL"
-          echo "=========================================="
-          SCRIPT
-
-          chmod +x deploy.sh
-
-      - name: Upload deployment script
-        env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-        run: |
-          scp \
-            -P 5522 \
-            -i ~/.ssh/github_actions \
-            deploy.sh \
-            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/home-physiotherapy-deploy.sh"
-
-      - name: Execute deployment
+ 
+          echo "Deployment package uploaded"
+ 
+      - name: Deploy website
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
           set -e
-
+ 
           ssh \
             -p 5522 \
             -i ~/.ssh/github_actions \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "bash /tmp/home-physiotherapy-deploy.sh"
-
+            'bash -s' <<'REMOTE_SCRIPT'
+ 
+          set -e
+ 
+          SITE="/home/home-physiotherapy.kenthealthcare.ae"
+          PUBLIC_HTML="$SITE/public_html"
+          BACKUP_ROOT="$SITE/backups"
+ 
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          BACKUP="$BACKUP_ROOT/$TIMESTAMP"
+          DEPLOY_DIR="/tmp/home-physiotherapy-deploy"
+ 
+          echo "=========================================="
+          echo "Home Physiotherapy Deployment"
+          echo "=========================================="
+ 
+          echo "Checking production directory..."
+ 
+          if [ ! -d "$PUBLIC_HTML" ]; then
+            echo "ERROR: Production directory does not exist:"
+            echo "$PUBLIC_HTML"
+            exit 1
+          fi
+ 
+          echo "Production directory:"
+          echo "$PUBLIC_HTML"
+ 
+          echo "=========================================="
+          echo "Creating backup"
+          echo "=========================================="
+ 
+          mkdir -p "$BACKUP"
+ 
+          rsync -a \
+            "$PUBLIC_HTML/" \
+            "$BACKUP/"
+ 
+          echo "Backup created:"
+          echo "$BACKUP"
+ 
+          echo "=========================================="
+          echo "Preparing deployment files"
+          echo "=========================================="
+ 
+          rm -rf "$DEPLOY_DIR"
+          mkdir -p "$DEPLOY_DIR"
+ 
+          tar -xzf \
+            /tmp/home-physiotherapy-dist.tar.gz \
+            -C "$DEPLOY_DIR"
+ 
+          echo "=========================================="
+          echo "Validating deployment files"
+          echo "=========================================="
+ 
+          if [ ! -f "$DEPLOY_DIR/index.html" ]; then
+            echo "ERROR: index.html missing"
+            exit 1
+          fi
+ 
+          if [ ! -f "$DEPLOY_DIR/admin-direct.html" ]; then
+            echo "ERROR: admin-direct.html missing"
+            exit 1
+          fi
+ 
+          if [ ! -d "$DEPLOY_DIR/assets" ]; then
+            echo "ERROR: assets directory missing"
+            exit 1
+          fi
+ 
+          echo "Deployment files validated successfully"
+ 
+          echo "=========================================="
+          echo "Deploying website"
+          echo "=========================================="
+ 
+          rsync -a --delete \
+            --exclude=".well-known/" \
+            --exclude="php-proxy.php" \
+            "$DEPLOY_DIR/" \
+            "$PUBLIC_HTML/"
+ 
+          echo "Website files deployed"
+ 
+          echo "=========================================="
+          echo "Setting ownership"
+          echo "=========================================="
+ 
+          chown -R homep9657:homep9657 "$PUBLIC_HTML"
+ 
+          echo "Ownership updated"
+ 
+          echo "=========================================="
+          echo "Cleaning temporary files"
+          echo "=========================================="
+ 
+          rm -rf "$DEPLOY_DIR"
+          rm -f /tmp/home-physiotherapy-dist.tar.gz
+ 
+          echo "Temporary files removed"
+ 
+          echo "=========================================="
+          echo "Deployment completed successfully"
+          echo "=========================================="
+ 
+          REMOTE_SCRIPT
+ 
       - name: Verify website
         run: |
           set -e
-
+ 
           echo "Checking website..."
-
+ 
           curl \
             --fail \
             --silent \
             --show-error \
             --location \
             --max-time 30 \
-            https://home-physiotherapy.kenthealthcare.ae/ \
+https://home-physiotherapy.kenthealthcare.ae/ \
             -o /dev/null
-
+ 
           echo "Website verification successful"
